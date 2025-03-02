@@ -1,0 +1,7 @@
+pandas>=1.0.0
+ta>=0.10.0
+krakenex>=3.0.0
+pykrakenapi>=0.2.4
+python-dotenv>=0.15.0
+colorama>=0.4.4
+yagmail>=0.11.214
