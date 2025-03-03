@@ -42,7 +42,6 @@ EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
 RECIPIENT_EMAIL = os.getenv('RECIPIENT_EMAIL')
 
 # FULL_NAMES dictionary: map full trading pair codes to proper crypto names.
-# Note: Dogecoin now uses "XDOGEZUSD"
 FULL_NAMES = {
     "XXBTZUSD": "Bitcoin",
     "XETHZUSD": "Ethereum",
@@ -399,12 +398,12 @@ def trading_loop():
                 add_log(f"Checking {full_name}")
                 sleep_with_exit(2.5)
                 try:
+                    # Fetch OHLC data (daily timeframe)
                     ohlc, last = kraken.get_ohlc_data(pair, interval=1440, ascending=True)
                     if ohlc.empty or ohlc['close'].iloc[-1] == 0.0:
                         raise ValueError("Invalid OHLC data received.")
                     current_price = ohlc['close'].iloc[-1]
                     previous_close = ohlc['close'].iloc[-2]
-                    logging.debug(f"Previous Close for {pair}: {previous_close}")
                 except Exception as e:
                     add_log(f"Skipping {pair}: {e}")
                     continue
@@ -413,35 +412,48 @@ def trading_loop():
                     add_log(f"Invalid price ${current_price:.2f} for {pair}. Skipping.")
                     continue
 
-                # Buy condition: if current price is 20% or more below previous close.
-                if current_price <= previous_close * 0.80:
-                    allocation = buying_power * 0.20
-                    remaining_power = buying_power * 0.80 - total_allocated
-                    allocation = min(allocation, remaining_power)
-                    volume = allocation / current_price
+                # Compute indicators
+                rsi = compute_indicators(ohlc)  # RSI (14)
+                macd_diff, macd_signal = compute_macd_indicator(ohlc)  # MACD (unused here but available)
+                short_sma, long_sma = compute_moving_averages(ohlc, 50, 200)  # 50/200-day SMA
+                atr = compute_atr(ohlc, 14)  # ATR for volatility
+
+                # Dynamic thresholds based on ATR
+                buy_threshold = previous_close * (1 - 0.15 - atr / previous_close)  # 15% + ATR adjustment
+                sell_loss_threshold = previous_close * (1 - 0.07 - atr / previous_close)  # 7% + ATR
+                sell_profit_threshold = previous_close * (1 + 0.25 + atr / previous_close)  # 25% + ATR
+
+                # Trend filter: Only trade in direction of 50/200 SMA trend
+                is_uptrend = short_sma > long_sma
+
+                # Buy logic: Oversold RSI, price dip, and uptrend confirmation
+                if rsi < 30 and current_price <= buy_threshold and is_uptrend:
+                    # Risk-adjusted position sizing (1% risk per trade)
+                    risk_per_trade = buying_power * 0.01  # 1% of account
+                    stop_loss = current_price - 2 * atr
+                    if stop_loss >= current_price:  # Prevent invalid stop-loss
+                        add_log(f"Invalid stop-loss for {pair}. Skipping.")
+                        continue
+                    position_size = risk_per_trade / (current_price - stop_loss)
+                    volume = min(position_size, (buying_power * 0.20 - total_allocated) / current_price)
                     volume = round(volume, 8)
                     min_order = get_min_order_size(pair, kraken)
                     if volume < min_order:
-                        add_log(f"Volume {volume} for {pair} below min order {min_order}. Skipping order.")
+                        add_log(f"Volume {volume} for {pair} below min order {min_order}. Skipping.")
                         continue
                     success, order_id = place_order(kraken_api, pair, 'buy', volume)
                     if success:
-                        trades.append({'Type': 'Buy', 'Symbol': pair, 'Price': current_price, 'Date': datetime.now()})
-                        total_allocated += allocation
+                        trades.append({'Type': 'Buy', 'Symbol': pair, 'Price': current_price, 'Date': datetime.now(), 'StopLoss': stop_loss})
+                        total_allocated += volume * current_price
 
-                # Sell condition: if current price is 10% below or 30% above previous close.
-                if current_price <= previous_close * 0.90 or current_price >= previous_close * 1.30:
-                    try:
-                        asset_code = pair[:4]
-                        tradable_vol = float(balance_tradable.loc[asset_code, 'vol']) if (asset_code in balance_tradable.index and 'vol' in balance_tradable.columns) else 0.0
-                        if tradable_vol > 0:
-                            volume = round(tradable_vol, 8)
-                            success, order_id = place_order(kraken_api, pair, 'sell', volume)
-                            if success:
-                                trades.append({'Type': 'Sell', 'Symbol': pair, 'Price': current_price, 'Date': datetime.now()})
-                    except KeyError:
-                        add_log(f"No tradable balance for {pair}.")
-                        continue
+                # Sell logic: Overbought RSI or significant price move
+                asset_code = pair[:4]
+                tradable_vol = float(balance_tradable.loc[asset_code, 'vol']) if (asset_code in balance_tradable.index and 'vol' in balance_tradable.columns) else 0.0
+                if tradable_vol > 0 and (rsi > 70 or current_price <= sell_loss_threshold or current_price >= sell_profit_threshold):
+                    volume = round(tradable_vol, 8)
+                    success, order_id = place_order(kraken_api, pair, 'sell', volume)
+                    if success:
+                        trades.append({'Type': 'Sell', 'Symbol': pair, 'Price': current_price, 'Date': datetime.now()})
 
             if trades:
                 for trade in trades:
@@ -450,7 +462,7 @@ def trading_loop():
                     trade_price = trade['Price']
                     trade_date = trade['Date'].strftime('%Y-%m-%d %H:%M:%S')
                     if trade_type == 'Buy':
-                        add_log(f"{BRIGHT_GREEN}Buy {trade_symbol} at ${trade_price:.2f} on {trade_date}{RESET}")
+                        add_log(f"{BRIGHT_GREEN}Buy {trade_symbol} at ${trade_price:.2f} on {trade_date} (SL: ${trade['StopLoss']:.2f}){RESET}")
                     elif trade_type == 'Sell':
                         add_log(f"{BRIGHT_GREEN}Sell {trade_symbol} at ${trade_price:.2f} on {trade_date}{RESET}")
             else:
