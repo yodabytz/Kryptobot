@@ -1,5 +1,5 @@
 # Kryptobot
-Kryptobot is an automated trading bot for Kraken’s cryptocurrency exchange. It monitors market data, executes trades based on customizable strategies, and displays real‑time information on a dynamic dashboard.
+Kryptobot is an automated trading bot for Kraken’s cryptocurrency exchange. It monitors market data, executes trades based on customizable strategies, and displays real‑time information on a dynamic dashboard. Use at your own risk.
 
 ## Features
 Real-time market monitoring via Kraken API
